@@ -2,6 +2,15 @@ const { EmbedBuilder } = require('discord.js');
 const { getVoteLeaderboard, monthStart } = require('../services/voteService');
 const GuildConfig = require('../models/GuildConfig');
 
+function safeSetTimeout(callback, delay) {
+    const MAX_DELAY = 2147483647;
+    if (delay > MAX_DELAY) {
+        setTimeout(() => safeSetTimeout(callback, delay - MAX_DELAY), MAX_DELAY);
+    } else {
+        setTimeout(callback, delay);
+    }
+}
+
 const MEDALS = ['🥇', '🥈', '🥉'];
 
 // ── Build the monthly leaderboard embed ───────────────────────────────────────
@@ -69,7 +78,7 @@ function startVoteAnnouncer(client) {
     const hoursUntil = Math.round(msUntil / 3600000);
     console.log(`[VoteAnnouncer] Next monthly announcement in ~${hoursUntil}h`);
 
-    setTimeout(async () => {
+    safeSetTimeout(async () => {
       // monthLabel = the month that just ended
       const ended = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() - 1, 1));
       const label = ended.toLocaleString('en-US', { month: 'long', year: 'numeric', timeZone: 'UTC' });
