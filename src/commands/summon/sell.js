@@ -1,55 +1,56 @@
-const UserSpirit = require('../../models/UserSpirit');
-const { findOwnedSpirit, sellValueForTier } = require('../../services/spiritService');
+const { EmbedBuilder }    = require('discord.js');
+const UserSpirit          = require('../../models/UserSpirit');
 const { getOrCreateUser } = require('../../services/userService');
-const { fmt } = require('../../utils/format');
+const { RARITIES }        = require('../../config/game');
 
-function teamIds(user) {
-  return [user.team.slot1, user.team.slot2, user.team.slot3].filter(Boolean);
-}
+const SELL_VALUES = {
+  Common:3,Uncommon:8,Rare:25,Epic:75,Custom:150,Legendary:350,Mythic:1000,Celestial:3000,Ascended:9999
+};
 
 module.exports = {
-  name: 'sell',
-  aliases: ['release'],
-  description: 'Sell one spirit or duplicate spirits for Mana.',
-  async execute({ message, args }) {
-    const user = await getOrCreateUser(message.author.id);
-    const team = teamIds(user);
+  name:'sell',aliases:[],
+  description:'Sell spirits by ID, rarity, or duplicates.',
+  async execute({message,args,prefix}){
+    const user=await getOrCreateUser(message.author.id);
+    if(!args[0])return message.reply(`**Usage:**\n\`${prefix}sell <id>\` \`${prefix}sell duplicates\` \`${prefix}sell common\` \`${prefix}sell common uncommon\``);
+    const sub=args[0].toLowerCase();
+    const teamIds=[user.team.slot1,user.team.slot2,user.team.slot3].filter(Boolean);
 
-    if (args[0] === 'duplicates') {
-      const all = await UserSpirit.find({ ownerId: message.author.id, locked: false, shortId: { $nin: team } }).populate('spirit');
-      const groups = new Map();
-      for (const us of all) {
-        const k = String(us.spirit._id);
-        if (!groups.has(k)) groups.set(k, []);
-        groups.get(k).push(us);
+    if(sub==='duplicates'||sub==='dupes'){
+      const all=await UserSpirit.find({ownerId:message.author.id,locked:{$ne:true}}).populate('spirit').sort({createdAt:1});
+      const seen=new Map(),toSell=[];
+      for(const us of all){
+        if(teamIds.includes(us.shortId))continue;
+        const k=us.spirit._id.toString();
+        if(seen.has(k))toSell.push(us); else seen.set(k,true);
       }
-      let sold = 0;
-      let mana = 0;
-      for (const group of groups.values()) {
-        group.sort((a, b) => a.createdAt - b.createdAt);
-        const duplicates = group.slice(1);
-        for (const us of duplicates) {
-          mana += sellValueForTier(us.spirit.tier);
-          sold += 1;
-          await us.deleteOne();
-        }
-      }
-      user.mana += mana;
-      await user.save();
-      return message.reply(`✅ Sold **${sold}** duplicate spirits for **${fmt(mana)} Mana**. Total Mana: **${fmt(user.mana)}**`);
+      if(!toSell.length)return message.reply('No duplicates to sell.');
+      const total=toSell.reduce((s,us)=>s+(SELL_VALUES[us.spirit.tier]||3),0);
+      await UserSpirit.deleteMany({_id:{$in:toSell.map(u=>u._id)}});
+      user.mana+=total;await user.save();
+      return message.reply({embeds:[new EmbedBuilder().setColor(0x2ECC71).setTitle('💰 Duplicates Sold').addFields({name:'Sold',value:`**${toSell.length}**`,inline:true},{name:'Mana',value:`**+${total}**`,inline:true},{name:'Total',value:`**${user.mana}**`,inline:true})]});
     }
 
-    const id = args[0];
-    if (!id) return message.reply('Use: `c sell <spiritId>` or `c sell duplicates`');
-    const owned = await findOwnedSpirit(message.author.id, id);
-    if (!owned) return message.reply('Spirit not found.');
-    if (owned.locked) return message.reply('This spirit is locked. Use `c unlock <id>` first.');
-    if (team.includes(owned.shortId)) return message.reply('This spirit is in your team. Remove it before selling.');
+    const rarityArgs=args.map(a=>RARITIES.find(r=>r.toLowerCase()===a.toLowerCase())).filter(Boolean);
+    if(rarityArgs.length>0){
+      const isConfirm=args[args.length-1]?.toLowerCase()==='confirm';
+      const toSell=(await UserSpirit.find({ownerId:message.author.id,locked:{$ne:true},shortId:{$nin:teamIds}}).populate('spirit')).filter(us=>rarityArgs.includes(us.spirit.tier));
+      if(!toSell.length)return message.reply(`No unlocked **${rarityArgs.join('/')}** spirits to sell.`);
+      const total=toSell.reduce((s,us)=>s+(SELL_VALUES[us.spirit.tier]||3),0);
+      const hasHigh=toSell.some(us=>['Legendary','Mythic','Celestial','Ascended'].includes(us.spirit.tier));
+      if(hasHigh&&!isConfirm)return message.reply(`⚠️ Selling **${toSell.length}** spirit(s) for **${total} Mana** including high-tier spirits.\nAdd \`confirm\` to proceed: \`${prefix}sell ${args.join(' ')} confirm\``);
+      await UserSpirit.deleteMany({_id:{$in:toSell.map(u=>u._id)}});
+      user.mana+=total;await user.save();
+      return message.reply({embeds:[new EmbedBuilder().setColor(0x2ECC71).setTitle(`💰 ${rarityArgs.join('+')} Sold`).addFields({name:'Sold',value:`**${toSell.length}**`,inline:true},{name:'Mana',value:`**+${total}**`,inline:true},{name:'Total',value:`**${user.mana}**`,inline:true})]});
+    }
 
-    const value = sellValueForTier(owned.spirit.tier);
-    user.mana += value;
-    await user.save();
-    await owned.deleteOne();
-    await message.reply(`✅ Sold **${owned.spirit.name}** for **${fmt(value)} Mana**. Total Mana: **${fmt(user.mana)}**`);
+    const spiritId=args[0].toUpperCase();
+    const owned=await UserSpirit.findOne({ownerId:message.author.id,shortId:spiritId}).populate('spirit');
+    if(!owned)return message.reply(`You don't own \`${spiritId}\`.`);
+    if(owned.locked)return message.reply(`\`${spiritId}\` is locked.`);
+    if(teamIds.includes(spiritId))return message.reply(`\`${spiritId}\` is in your team. Remove it first.`);
+    const value=SELL_VALUES[owned.spirit.tier]||3;
+    await owned.deleteOne();user.mana+=value;await user.save();
+    return message.reply({embeds:[new EmbedBuilder().setColor(0x2ECC71).setTitle('💰 Spirit Sold').setDescription(`${owned.spirit.emoji} **${owned.spirit.name}** \`${spiritId}\``).addFields({name:'Mana earned',value:`**${value}**`,inline:true},{name:'Total Mana',value:`**${user.mana}**`,inline:true})]});
   }
 };
