@@ -1,7 +1,16 @@
-const VoteRecord   = require('../models/VoteRecord');
+const VoteRecord          = require('../models/VoteRecord');
 const { getOrCreateUser } = require('./userService');
-const { logEvent } = require('./logService');
-const env = require('../config/env');
+const { logEvent }        = require('./logService');
+const env                 = require('../config/env');
+
+// Weapon crate on vote — only imported if weaponService exists
+// Wrapped in try so it doesn't crash if weapons aren't deployed yet
+let checkVoteCrate = null;
+let WEAPONS        = null;
+try {
+  checkVoteCrate = require('./weaponService').checkVoteCrate;
+  WEAPONS        = require('../config/weapons').WEAPONS;
+} catch { /* weapon system not yet deployed — skip silently */ }
 
 const VOTE_REWARDS = {
   mana:         200,
@@ -12,13 +21,12 @@ const VOTE_REWARDS = {
 async function assignVoterRole(client, userId) {
   const guildId = env.officialGuildId;
   const roleId  = env.voterRoleId;
-  if (!guildId || !roleId) return; // not configured — skip silently
+  if (!guildId || !roleId) return;
 
   try {
     const guild  = await client.guilds.fetch(guildId);
     const member = await guild.members.fetch(userId).catch(() => null);
-    if (!member) return; // player not in official server — that's fine
-
+    if (!member) return;
     await member.roles.add(roleId, 'Voted for Celestia on top.gg');
   } catch (err) {
     console.error('[VoterRole] Failed to assign role:', err.message);
@@ -35,7 +43,6 @@ async function removeVoterRole(client, userId) {
     const guild  = await client.guilds.fetch(guildId);
     const member = await guild.members.fetch(userId).catch(() => null);
     if (!member) return;
-
     await member.roles.remove(roleId, 'Vote expired (12h)');
   } catch (err) {
     console.error('[VoterRole] Failed to remove role:', err.message);
@@ -48,7 +55,7 @@ async function recordVote(client, { userId, isWeekend = false }) {
 
   const user       = await getOrCreateUser(userId);
   const manaEarned = VOTE_REWARDS.mana + (isWeekend ? VOTE_REWARDS.weekendBonus : 0);
-  user.mana += manaEarned;
+  user.mana       += manaEarned;
   await user.save();
 
   await logEvent(client, {
@@ -59,51 +66,61 @@ async function recordVote(client, { userId, isWeekend = false }) {
     data:    { manaEarned, isWeekend }
   });
 
-  // Assign voter role immediately, remove after 12h
+  // ── Weapon crate check — every 2nd vote gives a crate ──────────────────────
+  // Only runs when weapon system is deployed (checkVoteCrate not null)
+  let crateText = '';
+  if (checkVoteCrate) {
+    try {
+      const totalVotes = await VoteRecord.countDocuments({ userId });
+      const crateResult = await checkVoteCrate(client, userId, totalVotes);
+      if (crateResult?.ok && WEAPONS) {
+        const wpnDef = WEAPONS[crateResult.weapon.weaponId];
+        crateText =
+          `\n\n⚔️ **Vote Crate!** You received ` +
+          `${wpnDef?.emoji || '📦'} **${wpnDef?.name || crateResult.weapon.weaponId}** ` +
+          `\`${crateResult.shortId}\` (${(crateResult.rolledStat * 100).toFixed(1)}%)`;
+      }
+    } catch (err) {
+      console.error('[VoteCrate]', err.message);
+    }
+  }
+
+  // ── Assign voter role, remove after 12h ────────────────────────────────────
   await assignVoterRole(client, userId);
   setTimeout(() => removeVoterRole(client, userId), 12 * 60 * 60 * 1000);
 
-  // DM the player
+  // ── DM the player ──────────────────────────────────────────────────────────
   try {
     const discordUser = await client.users.fetch(userId);
     const weekendLine = isWeekend
       ? '\n🎉 **Weekend bonus!** You earned double Mana for voting today!'
       : '';
+
     await discordUser.send(
       `⭐ **Thank you for voting for Celestia on top.gg!**\n\n` +
       `You received **${manaEarned} Mana** as a reward.${weekendLine}\n\n` +
       `✨ You also received the **Celestia Voter** role in the official server (if you're a member).\n` +
-      `The role expires in **12 hours** when your next vote becomes available.\n\n` +
+      `The role expires in **12 hours** when your next vote becomes available.` +
+      `${crateText}\n\n` +
       `🔗 https://top.gg/bot/${env.topggBotId}/vote`
     );
   } catch { /* DMs disabled — reward still given */ }
 
   return { manaEarned };
 }
-const { checkVoteCrate } = require('./weaponService');
-const totalVotes = await VoteRecord.countDocuments({ userId });
-const crateResult = await checkVoteCrate(client, userId, totalVotes);
-if (crateResult?.ok) {
-  // Add to DM message
-  const wpnDef = require('../config/weapons').WEAPONS[crateResult.weapon.weaponId];
-  dmLines.push(`\n⚔️ **Vote Crate!** You received ${wpnDef?.emoji} **${wpnDef?.name}** \`${crateResult.shortId}\` (${(crateResult.rolledStat*100).toFixed(1)}%)`);
-}
 
 // ── Restore voter roles on bot restart ───────────────────────────────────────
-// Anyone who voted in the last 12h should still have the role.
-// Call this once in client.once('ready').
 async function restoreVoterRoles(client) {
   const roleId  = env.voterRoleId;
   const guildId = env.officialGuildId;
   if (!roleId || !guildId) return;
 
-  const since = new Date(Date.now() - 12 * 60 * 60 * 1000);
+  const since  = new Date(Date.now() - 12 * 60 * 60 * 1000);
   const recent = await VoteRecord.find({ votedAt: { $gte: since } });
 
   for (const record of recent) {
     const msLeft = record.votedAt.getTime() + 12 * 60 * 60 * 1000 - Date.now();
     if (msLeft <= 0) continue;
-
     await assignVoterRole(client, record.userId);
     setTimeout(() => removeVoterRole(client, record.userId), msLeft);
   }
@@ -136,6 +153,9 @@ async function getUserVoteCounts(userId) {
 }
 
 module.exports = {
-  recordVote, restoreVoterRoles,
-  getVoteLeaderboard, getUserVoteCounts, monthStart
+  recordVote,
+  restoreVoterRoles,
+  getVoteLeaderboard,
+  getUserVoteCounts,
+  monthStart,
 };
