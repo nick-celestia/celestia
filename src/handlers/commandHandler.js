@@ -3,31 +3,25 @@ const path = require('node:path');
 const { Collection } = require('discord.js');
 const env        = require('../config/env');
 const { LEGAL }  = require('../config/legal');
-const { getGuildConfig }            = require('../services/guildService');
-const { getOrCreateUser }           = require('../services/userService');
-const { checkSecurityBeforeCommand} = require('../services/antiAbuseService');
-const DisabledCommand               = require('../models/DisabledCommand');
+const { getGuildConfig }             = require('../services/guildService');
+const { getOrCreateUser }            = require('../services/userService');
+const { checkSecurityBeforeCommand } = require('../services/antiAbuseService');
+const DisabledCommand                = require('../models/DisabledCommand');
 
-// ── Exempt sets ───────────────────────────────────────────────────────────────
-const TERMS_EXEMPT = new Set([
-  'help','policies','policy','terms','privacy','accept','ping'
-]);
+const TERMS_EXEMPT = new Set(['help','policies','policy','terms','privacy','accept','ping']);
+const CHANNEL_DISABLE_EXEMPT = new Set(['enablecmd','disablecmd','disabledcmds','setprefix','setlog','help','policies','policy','terms','privacy','accept','ping']);
+const GLOBAL_DISABLE_EXEMPT  = new Set(['cmdcontrol','cc','help','policies','policy','terms','privacy','accept','ping']);
 
-const CHANNEL_DISABLE_EXEMPT = new Set([
-  'enablecmd','disablecmd','disabledcmds','setprefix','setlog',
-  'help','policies','policy','terms','privacy','accept','ping'
-]);
+// ── send helper — always uses channel.send, never reply ──────────────────────
+// This removes the "reply" arrow from all bot responses per issue #1
+function send(message, payload) {
+  if (typeof payload === 'string') return message.channel.send(payload);
+  return message.channel.send(payload);
+}
 
-const GLOBAL_DISABLE_EXEMPT = new Set([
-  'cmdcontrol','cc',
-  'help','policies','policy','terms','privacy','accept','ping'
-]);
-
-// ── Command loader ────────────────────────────────────────────────────────────
 function loadCommands(client) {
   client.commands = new Collection();
   client.aliases  = new Collection();
-
   const base = path.join(__dirname, '..', 'commands');
   for (const folder of fs.readdirSync(base)) {
     const folderPath = path.join(base, folder);
@@ -42,13 +36,11 @@ function loadCommands(client) {
   console.log(`✅ Loaded ${client.commands.size} commands`);
 }
 
-// ── Permission helpers ────────────────────────────────────────────────────────
 function isOwner(userId)    { return env.ownerIds.includes(userId); }
 function isBotAdmin(userId) { return isOwner(userId) || (env.botAdminIds || []).includes(userId); }
 function isHelper(userId)   { return isBotAdmin(userId) || (env.helperIds || []).includes(userId); }
 function isServerAdmin(msg) { return Boolean(msg.member?.permissions?.has('Administrator')); }
 
-// ── Terms/Privacy helpers ─────────────────────────────────────────────────────
 function hasAcceptedPolicies(user) {
   return Boolean(
     user.legal?.termsAcceptedAt &&
@@ -68,18 +60,16 @@ function needsPolicyCheck(command, commandName, message) {
 async function sendPolicyPrompt(message, prefix, user) {
   user.legal.lastPolicyPromptAt = new Date();
   await user.save();
-  return message.reply([
+  return send(message, [
     '🌙 **Before playing Celestia, please accept the Terms and Privacy Policy.**',
     '',
     `Terms: ${LEGAL.termsUrl}`,
     `Privacy: ${LEGAL.privacyUrl}`,
     '',
     `Type **${prefix}accept** to start playing.`,
-    `You can also type **${prefix}policies** anytime to view the links again.`
   ].join('\n'));
 }
 
-// ── Channel-disable helper ────────────────────────────────────────────────────
 function isDisabledInChannel(guildConfig, channelId, commandName) {
   if (CHANNEL_DISABLE_EXEMPT.has(commandName)) return false;
   const map = guildConfig.disabledCommandsByChannel;
@@ -88,7 +78,6 @@ function isDisabledInChannel(guildConfig, channelId, commandName) {
   return Array.isArray(list) && list.includes(commandName);
 }
 
-// ── Main message handler ──────────────────────────────────────────────────────
 async function handleMessage(client, message) {
   if (!message.guild || message.author.bot) return;
 
@@ -111,40 +100,38 @@ async function handleMessage(client, message) {
 
   const command = client.commands.get(commandName);
 
-  // ── 1. Channel-level disable ──────────────────────────────────────────────
   if (isDisabledInChannel(guildConfig, message.channel.id, commandName)) {
-    return message.reply(
-      `This command is disabled in this channel. ` +
-      `Ask a server admin to enable it with \`${prefix}enablecmd ${commandName} #channel\`.`
-    );
+    return send(message, `This command is disabled in this channel.`);
   }
 
-  // ── 2. Global disable (owner only, via c cmdcontrol) ─────────────────────
   if (!isOwner(message.author.id) && !GLOBAL_DISABLE_EXEMPT.has(commandName)) {
     const entry = await DisabledCommand.findOne({ commandName });
     if (entry) {
       const reason = entry.reason ? ` Reason: ${entry.reason}` : '';
-      return message.reply(`🚫 \`${commandName}\` is currently globally disabled.${reason}`);
+      return send(message, `🚫 \`${commandName}\` is currently globally disabled.${reason}`);
     }
   }
 
-  // ── 3. Role/permission checks ─────────────────────────────────────────────
-  if (command.ownerOnly    && !isOwner(message.author.id))                                return message.reply('Only the Celestia owner can use this command.');
-  if (command.botAdminOnly && !isBotAdmin(message.author.id))                             return message.reply('Only Celestia bot admins can use this command.');
-  if (command.helperOnly   && !isHelper(message.author.id))                               return message.reply('Only Celestia helpers or higher staff can use this command.');
-  if (command.adminOnly    && !isServerAdmin(message) && !isBotAdmin(message.author.id))  return message.reply('Only server admins or Celestia bot admins can use this command.');
+  if (command.ownerOnly    && !isOwner(message.author.id))                                return send(message, 'Only the Celestia owner can use this command.');
+  if (command.botAdminOnly && !isBotAdmin(message.author.id))                             return send(message, 'Only Celestia bot admins can use this command.');
+  if (command.helperOnly   && !isHelper(message.author.id))                               return send(message, 'Only Celestia helpers or higher staff can use this command.');
+  if (command.adminOnly    && !isServerAdmin(message) && !isBotAdmin(message.author.id))  return send(message, 'Only server admins or Celestia bot admins can use this command.');
 
-  // ── 4. Anti-abuse / security ──────────────────────────────────────────────
-  const security = await checkSecurityBeforeCommand(client, message, commandName);
-  if (!security.ok) return message.reply(security.reply);
+  // ── ISSUE #16: Owner immune to captcha/security checks ───────────────────
+  if (!isOwner(message.author.id)) {
+    const security = await checkSecurityBeforeCommand(client, message, commandName);
+    if (!security.ok) return send(message, security.reply);
+  }
 
-  // ── 5. Terms & Privacy (for regular players only) ─────────────────────────
   if (needsPolicyCheck(command, commandName, message)) {
     const user = await getOrCreateUser(message.author.id);
     if (!hasAcceptedPolicies(user)) return sendPolicyPrompt(message, prefix, user);
   }
 
-  // ── 6. Execute ────────────────────────────────────────────────────────────
+  // Patch message.reply to use channel.send for all commands
+  // This ensures ALL command replies never use Discord's reply system
+  message.reply = (payload) => send(message, payload);
+
   try {
     await command.execute({
       client, message,
@@ -155,7 +142,7 @@ async function handleMessage(client, message) {
     });
   } catch (error) {
     console.error(error);
-    return message.reply('Something broke while running that command. Check the hosting logs.');
+    return send(message, 'Something broke while running that command. Check the hosting logs.');
   }
 }
 
