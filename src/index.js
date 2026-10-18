@@ -11,28 +11,14 @@ const { restoreVoterRoles }      = require('./services/voteService');
 const { recordMessage, scheduleWeeklyReset, restorePermanentRoles } = require('./services/activityService');
 const { cleanupXpSessions }      = require('./services/playerLevelService');
 const { registerSlashCommands }  = require('./handlers/slashCommands');
+const { handleSummonButton }     = require('./commands/summon/summon');
+const { handleBattleButton }     = require('./commands/battle/battle');
 
-// Import button handlers from commands
-const { handleSummonButton } = require('./commands/summon/summon');
-const { handleBattleButton } = require('./commands/battle/battle');
-
-// Slash command executors — maps slash command name → prefix command handler
 const slashMap = {
-  summon:     's',
-  battle:     'b',
-  profile:    'profile',
-  daily:      'daily',
-  rank:       'rank',
-  team:       'team',
-  collection: 'collection',
-  sanctuary:  'sanctuary',
-  vote:       'vote',
-  help:       'help',
-  shop:       'shop',
-  stardust:   'stardust',
-  bond:       'bond',
-  lb:         'lb',
-  translate:  'translate',
+  summon:'s', battle:'b', profile:'profile', daily:'daily', rank:'rank',
+  team:'team', collection:'collection', sanctuary:'sanctuary', vote:'vote',
+  help:'help', shop:'shop', stardust:'stardust', bond:'bond', lb:'lb',
+  translate:'translate', votelb:'votelb', buttons:'buttons', sell:'sell',
 };
 
 async function main() {
@@ -53,11 +39,8 @@ async function main() {
 
   client.once('ready', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
-
-    // Register slash commands
     await registerSlashCommands().catch(console.error);
 
-    // Status
     function updateStatus() {
       const count = client.guilds.cache.size;
       client.user.setActivity(
@@ -68,36 +51,22 @@ async function main() {
     updateStatus();
     setInterval(updateStatus, 30 * 60 * 1000);
 
-    // Giveaway recovery
     await checkExpiredGiveaways(client).catch(console.error);
     setInterval(() => checkExpiredGiveaways(client).catch(console.error), 30_000);
-
-    // Vote: restore voter roles
     await restoreVoterRoles(client).catch(console.error);
-
-    // Activity: restore permanent milestone roles
     await restorePermanentRoles(client).catch(console.error);
-
-    // Activity: weekly reset scheduler
     scheduleWeeklyReset(client);
-
-    // Vote: monthly leaderboard auto-announcer
     startVoteAnnouncer(client);
-
-    // XP session cleanup
     setInterval(cleanupXpSessions, 60 * 60 * 1000);
   });
 
-  // ── Message handler ───────────────────────────────────────────────────────
   client.on('messageCreate', async (message) => {
     const handledAsDm = await handleDmMessage(client, message).catch(() => false);
     if (handledAsDm) return;
-
     recordMessage(client, message).catch(() => null);
     handleMessage(client, message);
   });
 
-  // ── Interaction handler — buttons + slash commands ────────────────────────
   client.on('interactionCreate', async (interaction) => {
 
     // ── Slash commands ──────────────────────────────────────────────────────
@@ -109,39 +78,64 @@ async function main() {
         || client.commands.find(c => c.aliases?.includes(prefixName));
       if (!command) return;
 
-      // Build a fake message-like object for compatibility
-      // Extract args from slash options
+      // Build args from slash options
       const args = [];
-      const userOpt = interaction.options.getUser('user', false);
-      if (userOpt) args.push(`<@${userOpt.id}>`);
-
-      const stringOpts = ['filter','spiritid','language','text','type'];
-      for (const opt of stringOpts) {
-        const val = interaction.options.getString(opt, false);
-        if (val) args.push(val);
-      }
-      const intOpts = ['amount'];
-      for (const opt of intOpts) {
-        const val = interaction.options.getInteger(opt, false);
-        if (val !== null) args.push(String(val));
-      }
+      try {
+        const userOpt = interaction.options.getUser?.('user', false);
+        if (userOpt) args.push(`<@${userOpt.id}>`);
+        for (const opt of ['filter','spiritid','language','text','type','target','command']) {
+          const val = interaction.options.getString?.(opt, false);
+          if (val) args.push(val);
+        }
+        for (const opt of ['amount']) {
+          const val = interaction.options.getInteger?.(opt, false);
+          if (val !== null && val !== undefined) args.push(String(val));
+        }
+      } catch {}
 
       try {
+        // Defer first so Discord doesn't show "thinking" forever
         await interaction.deferReply();
 
-        // Wrap interaction to behave like message for existing execute functions
+        // ── fakeMessage — gives slash interactions a message-like interface ──
+        // channel is set from interaction so summon image attachment works
         const fakeMessage = {
-          author:  interaction.user,
-          guild:   interaction.guild,
-          channel: interaction.channel,
-          member:  interaction.member,
-          reply:   async (payload) => {
-            if (interaction.deferred) return interaction.editReply(payload);
-            return interaction.reply(payload);
+          author:       interaction.user,
+          guild:        interaction.guild,
+          channel:      interaction.channel,   // ← critical: not null for slash
+          member:       interaction.member,
+          content:      '',
+          _interaction: interaction,
+          reply: async (payload) => {
+            try {
+              if (interaction.deferred || interaction.replied) {
+                return interaction.editReply(payload);
+              }
+              return interaction.reply(payload);
+            } catch (err) {
+              console.error('[Slash reply error]', err.message);
+            }
           },
           delete: async () => {},
-          content: '',
         };
+
+        // Patch channel.send to use editReply for slash
+        if (fakeMessage.channel) {
+          const originalSend = fakeMessage.channel.send.bind(fakeMessage.channel);
+          fakeMessage.channel = {
+            ...fakeMessage.channel,
+            send: async (payload) => {
+              try {
+                if (interaction.deferred || interaction.replied) {
+                  return interaction.editReply(payload);
+                }
+                return interaction.reply(payload);
+              } catch {
+                return originalSend(payload);
+              }
+            }
+          };
+        }
 
         await command.execute({
           client,
@@ -149,15 +143,17 @@ async function main() {
           args,
           rawArgs:  args.join(' '),
           prefix:   '/',
-          isOwner:  (id) => env.ownerIds.includes(id),
-          isBotAdmin: (id) => env.ownerIds.includes(id) || (env.botAdminIds || []).includes(id),
-          isHelper: (id) => env.ownerIds.includes(id) || (env.botAdminIds || []).includes(id) || (env.helperIds || []).includes(id),
+          isOwner:     (id) => env.ownerIds.includes(id),
+          isBotAdmin:  (id) => env.ownerIds.includes(id) || (env.botAdminIds || []).includes(id),
+          isHelper:    (id) => env.ownerIds.includes(id) || (env.botAdminIds || []).includes(id) || (env.helperIds || []).includes(id),
         });
       } catch (err) {
-        console.error('[Slash]', err);
-        const errReply = { content: 'Something went wrong with this slash command.', ephemeral: true };
-        if (interaction.deferred) interaction.editReply(errReply).catch(() => null);
-        else interaction.reply(errReply).catch(() => null);
+        console.error('[Slash execute error]', err);
+        const errMsg = { content: 'Something went wrong. Try the prefix command instead.', ephemeral: true };
+        try {
+          if (interaction.deferred || interaction.replied) await interaction.editReply(errMsg);
+          else await interaction.reply(errMsg);
+        } catch {}
       }
       return;
     }
@@ -165,26 +161,19 @@ async function main() {
     // ── Button interactions ─────────────────────────────────────────────────
     if (!interaction.isButton()) return;
 
-    // Summon button
     if (interaction.customId.startsWith('summon_')) {
       await handleSummonButton(interaction).catch(console.error);
       return;
     }
 
-    // Battle button (quick-action)
     if (interaction.customId.startsWith('battle_again_') ||
         interaction.customId.startsWith('battle_toggle_')) {
       await handleBattleButton(interaction).catch(console.error);
       return;
     }
 
-    // Friendly battle confirm/decline
-    if (interaction.customId.startsWith('fbattle_')) {
-      // Handled inside battle.js collector — no action needed here
-      return;
-    }
+    if (interaction.customId.startsWith('fbattle_')) return;
 
-    // Giveaway join
     await handleGiveawayButton(interaction).catch(console.error);
   });
 

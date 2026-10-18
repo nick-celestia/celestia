@@ -8,7 +8,7 @@ const { addBond, BOND }    = require('./bondService');
 const { getOrCreateUser }  = require('./userService');
 
 // Safe weapon import — doesn't crash if weapons not deployed
-let applyWeapon = () => ({ power: arguments[1], log: null });
+let applyWeapon = function(id, power) { return { power: power, log: null }; };
 try { applyWeapon = require('../config/weapons').applyWeapon; } catch {}
 
 // ── Team loader — always populate spirit ─────────────────────────────────────
@@ -30,13 +30,22 @@ async function loadTeam(user) {
 
 // ── Snapshot → team ───────────────────────────────────────────────────────────
 function teamFromSnapshot(snapshot) {
-  return snapshot.spirits.map(s => ({
-    shortId:   s.shortId,
-    level:     s.level,
-    spirit:    s.spirit,   // already a plain object in snapshot — has baseStats
-    ownerId:   snapshot.userId,
-    equipment: s.equipment || {}
-  }));
+  return snapshot.spirits.map(s => {
+    const spiritData = s.spirit?.toObject ? s.spirit.toObject() : (s.spirit || {});
+    return {
+      shortId:    s.shortId   || 'SNAP',
+      level:      s.level     || 1,
+      ownerId:    snapshot.userId,
+      equipment:  s.equipment || {},
+      bondPoints: s.bondPoints || 0,
+      spirit: {
+        name:      spiritData.name      || '???',
+        emoji:     spiritData.emoji     || '✨',
+        types:     spiritData.types     || [],
+        baseStats: spiritData.baseStats || { hp: 50, atk: 10, def: 10, spd: 10 },
+      }
+    };
+  });
 }
 
 // ── Ghost placeholder ─────────────────────────────────────────────────────────
