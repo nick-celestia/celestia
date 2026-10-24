@@ -153,6 +153,24 @@ async function findRandomOpponent(userId) {
 }
 
 // ── Main battle ───────────────────────────────────────────────────────────────
+// ── Safe save helper ─────────────────────────────────────────────────────────
+// Mongoose docs have .save(), plain objects (snapshots) don't.
+// Use updateOne as fallback so XP/bond still persists for snapshot spirits.
+async function safeSave(us) {
+  try {
+    if (typeof us.save === 'function') {
+      await safeSave(us);
+    } else {
+      await UserSpirit.updateOne(
+        { shortId: us.shortId, ownerId: us.ownerId },
+        { $set: { level: us.level, xp: us.xp, bondPoints: us.bondPoints, bondLevel: us.bondLevel, battlesTogether: us.battlesTogether } }
+      );
+    }
+  } catch (err) {
+    console.error('[Battle] safeSave failed for', us.shortId, err.message);
+  }
+}
+
 async function runBattle(attackerId, defenderId = null, options = {}) {
   const { friendly = false, levelCap = null } = options;
   const attacker = await getOrCreateUser(attackerId);
@@ -222,13 +240,13 @@ async function runBattle(attackerId, defenderId = null, options = {}) {
       if (us.shortId === 'GHOST') continue;
       applyXp(us, attackerWins ? winnerXp : isTie ? tieXp : loserXp);
       addBond(us, attackerWins ? bondWin : isTie ? bondTie : bondLoss, 1);
-      await us.save();
+      await safeSave(us);
     }
     for (const us of teamB) {
       if (us.shortId === 'GHOST' || defenderIsSnapshot) continue;
       applyXp(us, attackerWins ? loserXp : isTie ? tieXp : winnerXp);
       addBond(us, attackerWins ? bondLoss : isTie ? bondTie : bondWin, 1);
-      await us.save();
+      await safeSave(us);
     }
 
     if (isTie) { attacker.ties = (attacker.ties || 0) + 1; }

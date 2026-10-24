@@ -4,16 +4,10 @@ const { ECONOMY }        = require('../../config/game');
 const { fmt }            = require('../../utils/format');
 const { awardPlayerXp, PLAYER_XP } = require('../../services/playerLevelService');
 
-// ── Issue #11: Fixed daily reset at 9:00 AM IST = 03:30 UTC ─────────────────
-// Instead of "24h from last claim", resets at a fixed UTC time each day.
-// This means all players reset together — no one has an advantage by claiming
-// at odd hours to shift their window.
-
+// Fixed daily reset at 9:00 AM IST = 03:30 UTC for all players simultaneously
 function todayResetUTC() {
-  const now = new Date();
-  // 03:30 UTC = 09:00 IST
+  const now   = new Date();
   const reset = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 3, 30, 0, 0));
-  // If today's reset hasn't happened yet, use yesterday's reset
   if (now < reset) reset.setUTCDate(reset.getUTCDate() - 1);
   return reset;
 }
@@ -34,24 +28,29 @@ module.exports = {
     const user  = await getOrCreateUser(message.author.id);
     const now   = new Date();
     const reset = todayResetUTC();
-    const last  = user.daily.lastClaimAt ? new Date(user.daily.lastClaimAt) : null;
+    const last  = user.daily?.lastClaimAt ? new Date(user.daily.lastClaimAt) : null;
 
     // Already claimed since today's reset
     if (last && last >= reset) {
-      const next      = nextResetUTC();
-      const nextTs    = Math.floor(next.getTime() / 1000);
-      const embed = new EmbedBuilder()
-        .setColor(0x5DADE2)
-        .setTitle('🌙 Already claimed today')
-        .setDescription(`You already claimed your daily reward.\nCome back at <t:${nextTs}:t> (<t:${nextTs}:R>).`)
-        .setFooter({ text: 'Daily resets at 9:00 AM IST / 03:30 UTC' });
-      return message.reply({ embeds: [embed] });
+      const next   = nextResetUTC();
+      const nextTs = Math.floor(next.getTime() / 1000);
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor(0x5DADE2)
+            .setTitle('🌙 Already claimed today')
+            .setDescription(`You already claimed your daily reward.\nNext reset: <t:${nextTs}:t> (<t:${nextTs}:R>)`)
+            .setFooter({ text: 'Daily resets at 9:00 AM IST / 03:30 UTC' })
+        ]
+      });
     }
 
-    // Check streak — missed if last claim was before yesterday's reset
+    // Check streak
     const yesterdayReset = new Date(reset);
     yesterdayReset.setUTCDate(yesterdayReset.getUTCDate() - 1);
     const missed = !last || last < yesterdayReset;
+
+    if (!user.daily) user.daily = { streak: 0, lastClaimAt: null };
 
     if (missed && last) {
       user.daily.streak = 1;
@@ -60,30 +59,36 @@ module.exports = {
     }
 
     user.daily.lastClaimAt = now;
-    user.mana += ECONOMY.dailyMana;
+    user.mana = (user.mana || 0) + ECONOMY.dailyMana;
     await user.save();
 
     // Award player XP
     const xpResult = awardPlayerXp(user, 'daily');
     if (xpResult.granted) await user.save();
 
-    const streakBonus  = user.daily.streak >= 7  ? '🔥 7-day streak bonus!' :
-                         user.daily.streak >= 30 ? '⭐ 30-day streak bonus!' : '';
+    // Build description — never pass empty string to setDescription
+    const lines = [];
+    if (user.daily.streak >= 30) lines.push('⭐ **30-day streak bonus!**');
+    else if (user.daily.streak >= 7) lines.push('🔥 **7-day streak bonus!**');
+    if (xpResult.leveled) lines.push(`🌟 **Level Up!** You reached Player Level **${xpResult.newLevel}**!`);
+
+    const description  = lines.length > 0 ? lines.join('\n') : null;
     const nextTs       = Math.floor(nextResetUTC().getTime() / 1000);
-    const levelUpLine  = xpResult.leveled ? `\n🌟 **Level Up!** You reached Player Level **${xpResult.newLevel}**!` : '';
 
     const embed = new EmbedBuilder()
       .setColor(0x7B68EE)
       .setTitle('🌙 Daily Reward Claimed!')
       .addFields(
-        { name: '🔮 Mana Earned',  value: `**+${fmt(ECONOMY.dailyMana)}**`,    inline: true },
-        { name: '🔥 Daily Streak', value: `**${user.daily.streak}** days`,     inline: true },
-        { name: '💰 Total Mana',   value: `**${fmt(user.mana)}**`,             inline: true },
+        { name: '🔮 Mana Earned',  value: `**+${fmt(ECONOMY.dailyMana)}**`, inline: true },
+        { name: '🔥 Daily Streak', value: `**${user.daily.streak}** days`,  inline: true },
+        { name: '💰 Total Mana',   value: `**${fmt(user.mana)}**`,          inline: true },
       )
-      .setDescription(`${streakBonus}${levelUpLine}`)
-      .setFooter({ text: `Next reset: 9:00 AM IST` })
+      .setFooter({ text: `Next reset at 9:00 AM IST` })
       .setTimestamp(nextResetUTC());
 
-    await message.reply({ embeds: [embed] });
+    // Only set description if there's actual content — fixes the crash
+    if (description) embed.setDescription(description);
+
+    return message.reply({ embeds: [embed] });
   }
 };
