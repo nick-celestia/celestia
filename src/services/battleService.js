@@ -23,7 +23,10 @@ async function loadTeam(user) {
 
   const owned = await UserSpirit
     .find({ ownerId: user.userId, shortId: { $in: ids } })
-    .populate('spirit');   // ← critical: must populate
+    .populate('spirit')
+    .lean();   // ← CRITICAL FIX: .lean() returns plain JS objects so { ...s } spreads correctly.
+               //   Without .lean(), Mongoose docs use prototype getters that are invisible to spread,
+               //   causing { ...doc } to lose ALL fields → shortId: undefined, spirit: undefined.
 
   const byId    = new Map(owned.map(s => [s.shortId, s]));
   const ordered = ids.map(id => byId.get(id));

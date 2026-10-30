@@ -20,9 +20,9 @@ function buildBattleEmbed(result, authorMention, opponentText, prefix, isFriendl
   const roundLines = result.rounds.map(r => {
     const lines = r.attacks.map(a => {
       const atkName = a.attacker.shortId === 'GHOST' ? '👻 ???'
-        : `${a.attacker.spirit.emoji} ${a.attacker.spirit.name}${levelCap ? ` *(Lv.${a.attacker._simLevel || a.attacker.level})*` : ''}`;
+        : `${a.attacker.spirit?.emoji || '⭐'} ${a.attacker.spirit?.name || a.attacker.shortId}${levelCap ? ` *(Lv.${a.attacker._simLevel || a.attacker.level})*` : ''}`;
       const defName = a.defender.shortId === 'GHOST' ? '👻 ???'
-        : `${a.defender.spirit.emoji} ${a.defender.spirit.name}${levelCap ? ` *(Lv.${a.defender._simLevel || a.defender.level})*` : ''}`;
+        : `${a.defender.spirit?.emoji || '⭐'} ${a.defender.spirit?.name || a.defender.shortId}${levelCap ? ` *(Lv.${a.defender._simLevel || a.defender.level})*` : ''}`;
       const typeTag = a.matchup.advantaged
         ? ` *(${a.matchup.attackerType}→${a.matchup.defenderType} ${a.matchup.effectName})*` : '';
       const wpnTag  = a.weaponLog ? ` [${a.weaponLog}]` : '';
