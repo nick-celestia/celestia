@@ -19,6 +19,7 @@ const slashMap = {
   team:'team', collection:'collection', sanctuary:'sanctuary', vote:'vote',
   help:'help', shop:'shop', stardust:'stardust', bond:'bond', lb:'lb',
   translate:'translate', votelb:'votelb', buttons:'buttons', sell:'sell',
+  constellation:'constellation',  // ← was registered as slash but missing from map
 };
 
 async function main() {
@@ -118,6 +119,12 @@ async function main() {
           },
           delete: async () => {},
         };
+
+        // DM FIX: interaction.channel can be null in DMs even with Partials.Channel set.
+        // createDM() fetches/creates the DM channel object so commands can use it.
+        if (!fakeMessage.channel) {
+          try { fakeMessage.channel = await interaction.user.createDM(); } catch {}
+        }
 
         // Patch channel.send to use editReply for slash
         if (fakeMessage.channel) {

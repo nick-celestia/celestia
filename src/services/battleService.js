@@ -8,8 +8,13 @@ const { addBond, BOND }    = require('./bondService');
 const { getOrCreateUser }  = require('./userService');
 
 // Safe weapon import — doesn't crash if weapons not deployed
-let applyWeapon = function(id, power) { return { power: power, log: null }; };
-try { applyWeapon = require('../config/weapons').applyWeapon; } catch {}
+let applyWeapon = function(id, rolledStat, power) { return { power, log: null }; };
+let WEAPONS_MAP  = {};
+try {
+  const wMod  = require('../config/weapons');
+  applyWeapon = wMod.applyWeapon;
+  WEAPONS_MAP = wMod.WEAPONS || {};
+} catch {}
 
 // ── Team loader — always populate spirit ─────────────────────────────────────
 async function loadTeam(user) {
@@ -114,7 +119,13 @@ function spiritAttack(attacker, defender, context = {}) {
   const raw            = battlePowerScore(stats, { weights: BATTLE_RULES.weights });
   const matchup        = matchupDetails(attacker.spirit.types, defender?.spirit?.types || []);
 
-  const weaponResult = applyWeapon(attacker.equipment?.weapon, raw, stats, attacker, context);
+  // BUG FIX: argument order was wrong (raw/stats/attacker all shifted by one),
+  // and rolledStat was missing — weapons produced NaN power scores.
+  // Uses weapon's midpoint stat since full inventory system isn't active yet.
+  const weaponId   = attacker.equipment?.weapon || null;
+  const weaponDef  = weaponId ? WEAPONS_MAP[weaponId] : null;
+  const rolledStat = weaponDef ? (weaponDef.minStat + weaponDef.maxStat) / 2 : 0;
+  const weaponResult = applyWeapon(weaponId, rolledStat, raw, stats, attacker, context);
 
   let finalPower = weaponResult.power;
   if (!weaponResult.ignoreDisadvantage) finalPower *= matchup.typeMultiplier * matchup.effectMultiplier;
@@ -159,7 +170,7 @@ async function findRandomOpponent(userId) {
 async function safeSave(us) {
   try {
     if (typeof us.save === 'function') {
-      await safeSave(us);
+      await us.save();
     } else {
       await UserSpirit.updateOne(
         { shortId: us.shortId, ownerId: us.ownerId },
