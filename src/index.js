@@ -38,7 +38,7 @@ async function main() {
 
   loadCommands(client);
 
-  client.once('ready', async () => {
+  client.once('clientReady', async () => {
     console.log(`✅ Logged in as ${client.user.tag}`);
     await registerSlashCommands().catch(console.error);
 

@@ -57,13 +57,18 @@ function buildBattleEmbed(result, authorMention, opponentText, prefix, isFriendl
     ? `🤝 Friendly Battle${levelCap ? ` (Lv.${levelCap} cap)` : ''}`
     : '⚔️ Celestia Battle';
 
+  // FIX: roundLines was in addFields (1024-char limit) → moved to setDescription (4096-char limit).
+  // With 3 rounds × 6 attacks × ~65 chars ≈ 1170 chars, fields always crashed.
+  // opponentText mention (clickable) moved to its own inline field so it's still visible.
+  const roundDesc = (roundLines || '—').slice(0, 3900) + (simNote ? `\n${simNote}` : '');
+
   return new EmbedBuilder()
     .setColor(color)
     .setTitle(titleText)
-    .setDescription(`🔵 ${authorMention} vs 🔴 ${opponentText}${simNote}`)
+    .setDescription(roundDesc)
     .addFields(
-      { name: '📋 Battle Log', value: roundLines || 'No rounds recorded.' },
-      { name: '📊 Score',  value: `🔵 **${result.scoreA.toFixed(1)}** — **${result.scoreB.toFixed(1)}** 🔴`, inline: true },
+      { name: '📊 Score',   value: `🔵 **${result.scoreA.toFixed(1)}** — **${result.scoreB.toFixed(1)}** 🔴`, inline: true },
+      { name: '🎯 Opponent', value: opponentText, inline: true },
       { name: '🏆 Outcome', value: outcomeText + streakText + milestoneText },
       { name: '⚡ Rewards', value: rewardsText }
     )
